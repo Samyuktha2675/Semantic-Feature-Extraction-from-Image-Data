@@ -1,3 +1,11 @@
+# ✅ Mount Google Drive
+from google.colab import drive
+drive.mount('/content/drive')
+
+# ✅ Unzip the uploaded archive file to /content/
+!unzip '/content/archive (1) (1).zip' -d '/content/'
+
+# ✅ Imports
 import os
 import pandas as pd
 import torch
@@ -13,28 +21,43 @@ from sklearn.model_selection import train_test_split
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import ast
 
-# Constants
+import zipfile
+
+zip_path = "/content/archive (1) (1).zip"
+extract_path = "/content/dataset"
+
+with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+    zip_ref.extractall(extract_path)
+
+# ✅ Constants
 IMAGE_SIZE = 224
 BATCH_SIZE = 32
 NUM_EPOCHS = 10
 LEARNING_RATE = 0.001
-DRIVE_PATH = '/Users/shivamsharma/Desktop/Amazon-ml'
-DATASET_FOLDER = os.path.join(DRIVE_PATH, 'dataset')
+DRIVE_PATH = '/content/archive (1) (1).zip'
 
-# Define allowed units
+# ✅ Define possible paths (add more if needed)
+possible_paths = [
+    '/content/archive (1) (1).zip',
+    '/content',
+    DRIVE_PATH,
+    os.path.join(DRIVE_PATH, 'dataset'),
+]
+
+# ✅ Define allowed units
 ALLOWED_UNITS = {
     'item_weight': ['gram', 'kilogram', 'ounce', 'pound'],
     'item_length': ['centimetre', 'metre', 'inch', 'foot'],
-    # Add other entity types and their allowed units here
 }
 
-# Image transformation
+# ✅ Image transformation
 transform = transforms.Compose([
     transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
 
+# ✅ Dataset class
 class ProductImageDataset(Dataset):
     def __init__(self, data, transform=None):
         self.data = data
@@ -93,6 +116,7 @@ class ProductImageDataset(Dataset):
                 return 0.0, ''
         return value, unit
 
+# ✅ Feature extractor model
 class ProductFeatureExtractor(nn.Module):
     def __init__(self, num_entity_types):
         super(ProductFeatureExtractor, self).__init__()
@@ -106,6 +130,7 @@ class ProductFeatureExtractor(nn.Module):
         output = self.fc(features)
         return output.gather(1, entity_type.unsqueeze(1))
 
+# ✅ Load CSV from possible paths
 def load_data(file_name, possible_paths):
     for path in possible_paths:
         file_path = os.path.join(path, file_name)
@@ -114,6 +139,7 @@ def load_data(file_name, possible_paths):
             return pd.read_csv(file_path)
     raise FileNotFoundError(f"The file {file_name} was not found in any of the specified paths.")
 
+# ✅ Train model
 def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, num_epochs, device):
     best_val_loss = float('inf')
     for epoch in range(num_epochs):
@@ -127,9 +153,9 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
             loss.backward()
             optimizer.step()
             train_loss += loss.item() * images.size(0)
-        
+
         train_loss /= len(train_loader.dataset)
-        
+
         model.eval()
         val_loss = 0.0
         with torch.no_grad():
@@ -138,18 +164,19 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
                 outputs = model(images, entity_idxs)
                 loss = criterion(outputs.squeeze(), values)
                 val_loss += loss.item() * images.size(0)
-        
+
         val_loss /= len(val_loader.dataset)
         scheduler.step(val_loss)
-        
+
         print(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
-        
+
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             torch.save(model.state_dict(), os.path.join(DRIVE_PATH, 'best_model.pth'))
-    
+
     print("Training complete.")
 
+# ✅ Make prediction for a single row
 def predictor(model, image_link, entity_name, entity_to_idx, device):
     try:
         response = requests.get(image_link, timeout=10)
@@ -175,78 +202,70 @@ def predictor(model, image_link, entity_name, entity_to_idx, device):
         print(f"Error processing {image_link}: {str(e)}")
         return ""
 
+# ✅ Main function
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    possible_paths = [
-        DATASET_FOLDER,
-        DRIVE_PATH,
-        '/Users/shivamsharma/Desktop/Amazon-ml/dataset',
-    ]
-
     try:
         # Load training data
-        train_data = load_data('train.csv', possible_paths)
-        
-        # Split data into train and validation sets
+        train_data = load_data('/content/archive (1)-5.csv', possible_paths)
+
+        # Split data
         train_data, val_data = train_test_split(train_data, test_size=0.2, random_state=42)
         train_dataset = ProductImageDataset(train_data, transform=transform)
         val_dataset = ProductImageDataset(val_data, transform=transform)
 
-        # Create data loaders
-        train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
-        val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, num_workers=4, pin_memory=True)
+        # Data loaders
+        train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=2)
+        val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, num_workers=2)
 
-        # Initialize model, loss function, and optimizer
+        # Model setup
         model = ProductFeatureExtractor(num_entity_types=len(train_dataset.entity_types)).to(device)
         criterion = nn.MSELoss()
         optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
         scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=3, verbose=True)
 
-        # Train the model
+        # Train
         train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, NUM_EPOCHS, device)
 
-        # Load the best model for prediction
+        # Load best model
         model.load_state_dict(torch.load(os.path.join(DRIVE_PATH, 'best_model.pth'), map_location=device))
         model.eval()
 
-        # Load test data and make predictions
+        # Predict
         try:
-            test_data = load_data('test.csv', possible_paths)
+            test_data = load_data('/content/archive (1)-6.csv', possible_paths)
         except FileNotFoundError:
-            print("test.csv not found, loading sample_test.csv instead.")
-            test_data = load_data('sample_test.csv', possible_paths)
+            print("test.csv not found, using sample_test.csv instead.")
+            test_data = load_data('/content/archive (1)-6.csv', possible_paths)
 
-        # Generate predictions
         tqdm.pandas()
         test_data['prediction'] = test_data.progress_apply(
             lambda row: predictor(model, row['image_link'], row['entity_name'], train_dataset.entity_to_idx, device),
             axis=1
         )
 
-        # Create output directory if it doesn't exist
+        # Save predictions
         output_dir = os.path.join(DRIVE_PATH, 'output')
         os.makedirs(output_dir, exist_ok=True)
-
-        # Save predictions
         output_filename = os.path.join(output_dir, 'test_out.csv')
         test_data[['index', 'prediction']].to_csv(output_filename, index=False)
         print(f"Predictions saved to {output_filename}")
 
-        # Run sanity check
+        # Optional: sanity check script
         sanity_script_path = os.path.join(DRIVE_PATH, 'src', 'sanity.py')
-        os.system(f"python {sanity_script_path} {output_filename}")
+        if os.path.exists(sanity_script_path):
+            os.system(f"python {sanity_script_path} {output_filename}")
 
     except FileNotFoundError as e:
         print(f"Error: {e}")
         print("Please make sure the required files are in one of the following locations:")
         for path in possible_paths:
             print(f"- {path}")
-        print("If the files are in a different location, please add the path to the 'possible_paths' list in the code.")
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
-        print("Please check your code and data, and try again.")
 
+# ✅ Run the main function
 if __name__ == "__main__":
     main()
